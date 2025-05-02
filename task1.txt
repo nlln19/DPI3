@@ -1,0 +1,14 @@
+(a) bro what
+
+(b) 
+The state is encoded as a JSON string and sent via UDP. 
+Example: {"alice": 22, "bob": 35, "carol": 15}
+
+To ensure safe transmission over the Internet, the UDP payload is limited to 576 bytes.
+The JSON string must therefore not exceed 576 bytes.
+
+Number of participants:
+Assuming each entry is ~20 bytes on average, the system can safely support around:
+
+576 bytes / 20 bytes ≈ 28 participants
+To be safe, limit to around 20–25 participants.
