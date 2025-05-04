@@ -1,4 +1,9 @@
-(a) bro what
+(a) To answer the question on how our state-based CRDT design will be / is implemented, we discuss its partial order, merge and monotonic operations:
+For the partial-order we will regard two participants Alice and Bob. In our case by pressing "Enter" we create a new message that will be counted. If for example Alice and Bob create concurrent messages that gets updated, we may not have a defined ordering of the messages. Alice could have already created messages before Bob. Such a "Happens-before" process is a partial order. 
+The merge operation will synchronize the chat state between multiple instances. The purpos of it will be to merge the local state with the incoming state recieved via the broadcast from another peer. The merge function should loop though each user and count in the incoming state. If the User does not exist in the local state or if the recieved count is greater than the current local count it updates the local state. When an update occures it should notify the user the new merged state. 
+The monotonic operation will be also handled during the synchronization. The merge function ensures that the message count per user only increases or stays the same. A user’s count will get updated only if the incoming count is greater than the current one. Otherwise, if the incoming count is lower or equal, it's ignored. This should guarantee that once a higher count is seen, it is never overwritten by a smaller value.
+
+
 
 (b) 
 The state is encoded as a JSON string and sent via UDP. 
