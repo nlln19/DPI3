@@ -41,9 +41,10 @@ def cli():
     return args.username, args.port, args.host, args.interval, args.temp
 
 
-def run(command: list[str], env=None):
+def run(command: list[str], env=None, input=None):
     return subprocess.run(
         command,
+        input=input,
         check=True,
         text=True,
         stdout=subprocess.PIPE,
