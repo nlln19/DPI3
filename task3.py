@@ -158,16 +158,6 @@ class GitbasedChat:
             print(f" {user}: {count}")
         print("Press Enter to send message.")
 
-    #def push_message(self):
-    #   branch = run(["git", "symbolic-ref", "--short", "HEAD"])
-     #   remotes = run(["git", "remote"])
-      #  try:
-       #     for remote in remotes:
-        #        run(["git", f"{remote}", f"{branch}"])
-        #except Exception as e:
-         #   print("Error while pushing: ", e)
-        
-
     def run(self):
         print(f"Git-based chat as '{self.username}' started.")
         print("Type messages and press ENTER to send.")
