@@ -92,6 +92,35 @@ class PersistentFrontierChat:
             print(f"  {user}: {count}")
         print("Press 'ENTER' to send message...")
 
+    def load_state(self):
+        path = os.path.join(FRONTIER_DIR, self.username)
+        state = {}
+        if os.path.isdir(path):
+            for filename in os.listdir(path):
+                try:
+                    peer = filename.replace(".txt", "")
+                    with open(os.path.join(path, filename), "r") as f:
+                     count = int(f.read().strip())
+                     state[peer] = count
+                except Exception as e:
+                    print(f"Unable to load state for file {filename}: {e}" )
+        return state
+
+        
+
+    def save_state(self):
+        if self.temp:
+            return
+        path = os.path.join(FRONTIER_DIR, self.username)
+        os.makedirs(path, exist_ok=True)
+        for peer, count in self.state.items():
+            try:
+                with open(os.path.join(path, f"{peer}.txt"), 'w') as f:
+                    f.write(str(count))
+            except Exception as e:
+             print(f"Unable to save the state for {peer}...: {e}")
+       
+
     def run(self):
         print(f"Started chat as '{self.username}' with persistence.")
         try:
