@@ -19,16 +19,24 @@ class GitbasedChat:
         self.lock = threading.Lock()
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
         try:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except Exception:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.sock.bind(('', BROADCAST_PORT))
+
+        try:
+            self.sock.bind(('', BROADCAST_PORT))
+        except Exception as e:
+            print(f"Could not bind to port {BROADCAST_PORT}: {e}")
+            sys.exit(1)
+
+        print(f"[{self.username}] Listening on UDP port {BROADCAST_PORT}")
 
         threading.Thread(target=self.listen, daemon=True).start()
         threading.Thread(target=self.broadcast_loop, daemon=True).start()
+
 
 
     def broadcast_loop(self):
@@ -55,7 +63,10 @@ class GitbasedChat:
                 "frontier": self.get_frontier_local()
             }
         #print(f"[{self.username}] Broadcasting frontier: {frontier}") MAYBE NOT NEEDED / WAS USED TO TEST IMPLEMENTATION
-        self.sock.sendto(json.dumps(msg).encode('utf-8'), ('<broadcast>', BROADCAST_PORT))
+        try:
+            self.sock.sendto(json.dumps(msg).encode('utf-8'), ('255.255.255.255', BROADCAST_PORT))
+        except Exception as e:
+            print(f"Error sending broadcast: {e}")
 
     def get_frontier_local(self):
         refs = run(["git", "for-each-ref", "--format=%(refname)"]).splitlines()
