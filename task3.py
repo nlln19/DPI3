@@ -110,12 +110,15 @@ class GitbasedChat:
         tree = lines[0].split()[1]
         parents = [line.split()[1] for line in lines if line.startswith("parent")]
         author_line = [line for line in lines if line.startswith("author")][0]
-        author = author_line.split()[1]
+        author_parts = author_line.split()
+        author = author_parts[1]
+        author_time = " ".join(author_parts[2:])  # Extract timestamp
         msg_index = lines.index("") + 1
         message = "\n".join(lines[msg_index:])
         return {
             "type": "commit",
             "author": author,
+            "author_time": author_time,
             "message": message,
             "parents": parents,
             "tree": tree }
@@ -132,14 +135,17 @@ class GitbasedChat:
         parents = payload["parents"]
         message = payload["message"]
         author = payload["author"]
+        author_time = payload["author_time"]
 
         args = ["git", "commit-tree", tree] + sum([["-p", p] for p in parents], [])
         commit_hash = run(args, env={
             **os.environ,
             "GIT_AUTHOR_NAME": author,
             "GIT_AUTHOR_EMAIL": f"{author}@example.com",
+            "GIT_AUTHOR_DATE": author_time,
             "GIT_COMMITTER_NAME": author,
-            "GIT_COMMITTER_EMAIL": f"{author}@example.com"
+            "GIT_COMMITTER_EMAIL": f"{author}@example.com",
+            "GIT_COMMITER_DATE": author_time
         }, input=message)
         run(["git", "update-ref", f"refs/heads/{author}", commit_hash])
 
@@ -155,13 +161,16 @@ class GitbasedChat:
                 parents.append(commit)
 
         empty_tree  = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        timestamp = str(int(time.time())) + " +0000"
         args = ["git", "commit-tree", empty_tree] + sum([["-p", p] for p in parents], [])
         new_commit = run(args, input=msg, env={
             **os.environ,
             "GIT_AUTHOR_NAME": self.username,
             "GIT_AUTHOR_EMAIL": f"{self.username}@example.com",
+            "GIT_AUTHOR_DATE": timestamp,
             "GIT_COMMITTER_NAME": self.username,
-            "GIT_COMMITTER_EMAIL": f"{self.username}@example.com"
+            "GIT_COMMITTER_EMAIL": f"{self.username}@example.com",
+            "GIT_COMMITER_DATE": timestamp
         })
         run(["git", "update-ref", f"refs/heads/{self.username}", new_commit])
         print(f"Message sent: {msg}")
