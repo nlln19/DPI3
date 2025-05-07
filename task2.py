@@ -27,13 +27,10 @@ class FrontierChat:
         # UDP Socket für Broadcast
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            if(self.running):
-                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)# Port wiederverwenden
-            else: 
-                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)# Port wiederverwenden
-        except Exception as e:
-            print("Exception reusing port / address:" , e)
-            
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)# Port wiederverwenden      
+        except Exception:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)# Port wiederverwenden
+
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1) # Broadcast erlauben
         self.sock.bind(('', BROADCAST_PORT)) # mit Broadcastport verbinden
 
