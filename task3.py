@@ -16,6 +16,9 @@ FRONTIER_DIR = "frontiers"
 class GitbasedChat:
     def __init__(self, username, temp):
         self.username = username
+        self.frontier_path = os.path.join(FRONTIER_DIR, self.username)
+        os.makedirs(self.frontier_path, exist_ok=True)
+        self.frontier_cache = self.load_frontier_disk()
         self.temp = temp
         self.running = True
         self.lock = threading.Lock()
@@ -23,11 +26,11 @@ class GitbasedChat:
 
         if self.temp:
             self.temp_dir = tempfile.TemporaryDirectory()
-            os.chdir(self.temp_dir.name)
+            os.chdir(self.temp_dir.name) #chdir changes the current working directory of the calling process to the directory specified in path
             run(["git", "init", "-b", self.username])
             run(["git", "config", "user.name", self.username])
             run(["git", "config", "user.email", f"{self.username}@example.com"])
-            empty_tree = run(["git", "mktree"], input="")
+            empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
             init_commit = run(["git", "commit-tree", empty_tree], input=f"{self.username} joined (temp mode)")
             run(["git", "update-ref", f"refs/heads/{self.username}", init_commit])
             run(["git", "symbolic-ref", "HEAD", f"refs/heads/{self.username}"])
@@ -38,7 +41,7 @@ class GitbasedChat:
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.sock.sendto(b'test', (('255.255.255.255', 6969)))
+        #self.sock.sendto(b'test', (('255.255.255.255', 6969)))
 
         try:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -75,11 +78,14 @@ class GitbasedChat:
     def send_frontier(self):
         with self.lock:
             frontier = self.get_frontier_local()
+            self.save_frontier_to_disk(frontier)  
+            self.frontier_cache = frontier
             msg = {
                 "type": "frontier",
                 "from": self.username,
                 "frontier": frontier
             }
+        print(f"[{self.username}] Broadcasting frontier: {frontier}")  # DEBUG
         print(f"[{self.username}] Broadcasting frontier: {frontier}")
         try:
             self.sock.sendto(json.dumps(msg).encode('utf-8'), ('255.255.255.255', BROADCAST_PORT))
@@ -92,37 +98,91 @@ class GitbasedChat:
         for ref in refs:
             if ref.startswith("refs/heads/"):
                 user = ref.split("/")[-1]
-                count = run(["git", "rev-list", "--count", ref])
-                frontier[user] = int(count)
+                if user in ["main", "master", "HEAD"]:
+                    continue
+                if user not in frontier:
+                    count = run(["git", "rev-list", "--count", ref])
+                    frontier[user] = int(count)
         return frontier
-
+                
     def handle_message(self, msg, addr):
         if msg["type"] == "frontier":
-            print(f"[{self.username}] Received frontier from {msg['from']}: #{msg['frontier']}")
+            print(f"[{self.username}] Received frontier from {msg['from']}: {msg['frontier']}")
             missing = self.get_missing_commits(msg["frontier"])
+            print(f"[{self.username}] Calculated missing commits: {missing}")
             for commit_hash in missing:
-                packet = self.create_commit_packet(commit_hash)
+                print(f"[{self.username}] Sending commit {commit_hash} to {addr}")  # DEBUG
+                acket = self.create_commit_packet(commit_hash)
                 try:
                     self.sock.sendto(json.dumps(packet).encode(), addr)
                 except Exception as e:
                     print(f"[{self.username}] Failed to send commit {commit_hash}: {e}")
         elif msg["type"] == "commit":
+            print(f"[{self.username}] Received commit packet: {msg['message'][:40]} ({msg['author']})")  # DEBUG
             self.receive_commit(msg)
 
-    def get_missing_commits(self, frontier):
-        missing = []
-        local = self.get_frontier_local()
-        for user, remote_count in frontier.items():
-            local_count = local.get(user, 0)
-            if remote_count > local_count:
-                try:
-                    commits = run(["git", "rev-list", "--reverse", f"{user}~{remote_count - local_count}..{user}"]).splitlines()
-                    missing.extend(commits)
-                except Exception as e:
-                    print(f"[{self.username}] Failed to get missing commits from {user}: {e}")
-        return missing
+
+    def get_missing_commits(self, remote_frontier):
+        """
+        Determine which commits the peer is missing.
+        """
+        try:
+            log_output = run([
+                "git", "log", "--all", "--topo-order",
+                "--pretty=format:%an;%H;%P;%s"
+            ])
+        except Exception as e:
+            print(f"[{self.username}] Failed to get commit log: {e}")
+            return []
+
+        commit_lines = log_output.splitlines()
+        gaps = {}
+        for line in commit_lines:
+            try:
+                author, commit_hash, parents_str, _ = line.split(';', 3)
+            except ValueError:
+                continue
+
+            peer_count = remote_frontier.get(author, 0)
+            local_count = self.frontier_cache.get(author, 0)
+            if author not in gaps:
+                # If we have more commits for that author than they do, calculate the gap.
+                if local_count > peer_count:
+                    gaps[author] = {
+                        "count": local_count - peer_count,
+                        "commits": []
+                    }
+
+            if author in gaps and gaps[author]["count"] > 0:
+                gaps[author]["commits"].append(commit_hash)
+                gaps[author]["count"] -= 1
+
+        # Flatten all missing commits from gaps
+        all_missing = []
+        for info in gaps.values():
+            # Ensure commits are sent oldest-to-newest
+            all_missing.extend(reversed(info["commits"]))
+        return all_missing
+
+
+    
+    #(base) MacBook-Pro-5:Silvan Lenny$ git log --author=Silvan --reverse --pretty=format:%H
+    #6961300e43a51412038e36511adbe765b0d2d229
+    #7f4a0a2f1b9c103736449f2439153a14b66f6f1a
+    #3f69f8593320603ff3fa35dcf894761f1df6a193
+    #67efd2e8b6dad0625e203228f2a21fded3bdb217
+    #485e687e1c57c397d9249129146f478e93ab8f35
+    #cd1bf3a407254d6eccd88ed25212677997d01bac
+    #4d5ac75c2d6df1c596cdb08fd6789cb1a9492eb3
+    #be721c213686d1d26e7e0f196f486ccf44632865
+    #90b387a53b2244773e2b626c441309decabd57ad
+    #da8330a7a422ae7db8f11ee43cb0abe72001340b
+    #97eb484df07236b08828a2997bea57bb49f40af9
+    #fad017f31c9846a9a9e7e27a6072c68907d32c73
+    #12bbf474363445d652d3bd6841b3bfbaa6a33fe4
 
     def create_commit_packet(self, commit_hash):
+        print(f"[{self.username}] Creating packet for commit {commit_hash}")  # DEBUG
         raw = run(["git", "cat-file", "-p", commit_hash])
         lines = raw.splitlines()
         tree = lines[0].split()[1]
@@ -168,8 +228,14 @@ class GitbasedChat:
             "GIT_COMMITTER_DATE": author_time
         }, input=message)
         print(f"[{self.username}] Applied commit from {author}: {message[:40]}")
+        print(f"[{self.username}] Created commit hash: {commit_hash}")
 
         run(["git", "update-ref", f"refs/heads/{author}", commit_hash])
+
+        # Update and persist frontier
+        self.frontier_cache = self.get_frontier_local()
+        self.save_frontier_to_disk(self.frontier_cache)
+
 
     def retry_pending_commits(self):
         while self.running:
@@ -180,10 +246,12 @@ class GitbasedChat:
                         run(["git", "cat-file", "-e", parent])
                     self.receive_commit(payload)
                     self.pending_commits.remove(payload)
-                except Exception:
-                    continue
+                except Exception as e:
+                    print(f"[{self.username}] Still missing parents for retry: {payload['message'][:30]} - {e}")
+
 
     def post_message(self, msg):
+        print(f"[{self.username}] Creating new commit with message: {msg}")  # DEBUG
         run(["git", "fetch", "--all"])
         refs = run(["git", "for-each-ref", "--format=%(refname)"]).splitlines()
         parents = []
@@ -193,7 +261,7 @@ class GitbasedChat:
                 parents.append(commit)
 
         empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-        timestamp = str(int(time.time())) + " +0000"
+        timestamp = "1715058000 +0000"
         args = ["git", "commit-tree", empty_tree] + sum([["-p", p] for p in parents], [])
         new_commit = run(args, input=msg, env={
             **os.environ,
@@ -205,8 +273,32 @@ class GitbasedChat:
             "GIT_COMMITTER_DATE": timestamp
         })
         run(["git", "update-ref", f"refs/heads/{self.username}", new_commit])
+        print(f"[{self.username}] Commit hash: {new_commit}")  #DEBUG
         print(f"Message sent: {msg}")
+    
+    def load_frontier_disk(self):
+        frontier = {}
+        if not os.path.exists(self.frontier_path):
+            return frontier
+        for fname in os.listdir(self.frontier_path):
+            fpath = os.path.join(self.frontier_path, fname)
+            try:
+                with open(fpath, "r") as f:
+                    count = int(f.read().strip())
+                    frontier[fname] = count
+            except Exception:
+                continue
+        return frontier
 
+    def save_frontier_to_disk(self, frontier):
+        for user, count in frontier.items():
+            fpath = os.path.join(self.frontier_path, user)
+            try:
+                with open(fpath, "w") as f:
+                    f.write(str(count))
+            except Exception as e:
+                print(f"[{self.username}] Failed to write frontier for {user}: {e}")
+    
     def print_frontier(self):
         frontier = self.get_frontier_local()
         print("\nMessages from other Users:")

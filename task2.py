@@ -94,7 +94,7 @@ class FrontierChat:
                      count = int(f.read().strip())
                      state[peer] = count
                 except Exception as e:
-                    printf(f"Unable to load state for file {filename}: {e}" )
+                    print(f"Unable to load state for file {filename}: {e}" )
         return state
 
         
@@ -109,7 +109,7 @@ class FrontierChat:
                 with open(os.path.join(path, f"{peer}.txt"), 'w') as f:
                     f.write(str(count))
             except Exception as e:
-             printf(f"Unable to save the state for {peer}...: {e}")
+             print(f"Unable to save the state for {peer}...: {e}")
        
 
     def run(self):
