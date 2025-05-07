@@ -4,6 +4,8 @@ import threading
 import time
 import sys
 import os
+import tempfile
+import shutil
 from utils import run
 
 
@@ -17,9 +19,26 @@ class GitbasedChat:
         self.temp = temp
         self.running = True
         self.lock = threading.Lock()
+        self.pending_commits = []  # Queue for out-of-order commits
+
+        if self.temp:
+            self.temp_dir = tempfile.TemporaryDirectory()
+            os.chdir(self.temp_dir.name)
+            run(["git", "init", "-b", self.username])
+            run(["git", "config", "user.name", self.username])
+            run(["git", "config", "user.email", f"{self.username}@example.com"])
+            empty_tree = run(["git", "mktree"], input="")
+            init_commit = run(["git", "commit-tree", empty_tree], input=f"{self.username} joined (temp mode)")
+            run(["git", "update-ref", f"refs/heads/{self.username}", init_commit])
+            run(["git", "symbolic-ref", "HEAD", f"refs/heads/{self.username}"])
+        else:
+            if not os.path.exists(".git"):
+                print("Error: Not inside a Git repository.")
+                sys.exit(1)
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.sendto(b'test', (('255.255.255.255', 6969)))
 
         try:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
@@ -36,8 +55,7 @@ class GitbasedChat:
 
         threading.Thread(target=self.listen, daemon=True).start()
         threading.Thread(target=self.broadcast_loop, daemon=True).start()
-
-
+        threading.Thread(target=self.retry_pending_commits, daemon=True).start()
 
     def broadcast_loop(self):
         while self.running:
@@ -60,9 +78,9 @@ class GitbasedChat:
             msg = {
                 "type": "frontier",
                 "from": self.username,
-                "frontier": self.get_frontier_local()
+                "frontier": frontier
             }
-        #print(f"[{self.username}] Broadcasting frontier: {frontier}") MAYBE NOT NEEDED / WAS USED TO TEST IMPLEMENTATION
+        print(f"[{self.username}] Broadcasting frontier: {frontier}")
         try:
             self.sock.sendto(json.dumps(msg).encode('utf-8'), ('255.255.255.255', BROADCAST_PORT))
         except Exception as e:
@@ -80,28 +98,28 @@ class GitbasedChat:
 
     def handle_message(self, msg, addr):
         if msg["type"] == "frontier":
-            #print(f"[{self.username}] Received frontier from {msg['from']}: {msg['frontier']}") MAYBE NOT NEEDED / WAS USED TO TEST IMPLEMENTATION
+            print(f"[{self.username}] Received frontier from {msg['from']}: #{msg['frontier']}")
             missing = self.get_missing_commits(msg["frontier"])
             for commit_hash in missing:
                 packet = self.create_commit_packet(commit_hash)
-                self.sock.sendto(json.dumps(packet).encode(), addr)
-        
+                try:
+                    self.sock.sendto(json.dumps(packet).encode(), addr)
+                except Exception as e:
+                    print(f"[{self.username}] Failed to send commit {commit_hash}: {e}")
         elif msg["type"] == "commit":
             self.receive_commit(msg)
 
-
     def get_missing_commits(self, frontier):
-        local = self.get_frontier_local()
         missing = []
-        for user, count in frontier.items():
-            new_count = local.get(user, 0)
-            if new_count > count:
+        local = self.get_frontier_local()
+        for user, remote_count in frontier.items():
+            local_count = local.get(user, 0)
+            if remote_count > local_count:
                 try:
-                    rng = f"{user}~{new_count - count}..{user}"
-                    commits = run(["git", "rev-list", "--reverse", rng]).splitlines()
+                    commits = run(["git", "rev-list", "--reverse", f"{user}~{remote_count - local_count}..{user}"]).splitlines()
                     missing.extend(commits)
-                except:
-                    continue
+                except Exception as e:
+                    print(f"[{self.username}] Failed to get missing commits from {user}: {e}")
         return missing
 
     def create_commit_packet(self, commit_hash):
@@ -112,7 +130,7 @@ class GitbasedChat:
         author_line = [line for line in lines if line.startswith("author")][0]
         author_parts = author_line.split()
         author = author_parts[1]
-        author_time = " ".join(author_parts[2:])  # Extract timestamp
+        author_time = " ".join(author_parts[2:])
         msg_index = lines.index("") + 1
         message = "\n".join(lines[msg_index:])
         return {
@@ -121,14 +139,8 @@ class GitbasedChat:
             "author_time": author_time,
             "message": message,
             "parents": parents,
-            "tree": tree }
-        #(base) MacBook-Pro-5:DPI3 Lenny$ git cat-file -p b9a08620776980224b8dbee65970491f5b91a72e
-        #tree 48b9a873ad6f9b22ae22cd1e0a3232debfdfa49c
-        #parent e3cce7fe879b2fa33eb31cd653bb18298d11fed6
-        #author Lennsco <leandro09.lika@gmail.com> 1746457445 +0200
-        #committer Lennsco <leandro09.lika@gmail.com> 1746457445 +0200
-        #Bugfix Macos broadcast
-
+            "tree": tree
+        }
 
     def receive_commit(self, payload):
         tree = payload["tree"]
@@ -136,6 +148,14 @@ class GitbasedChat:
         message = payload["message"]
         author = payload["author"]
         author_time = payload["author_time"]
+
+        try:
+            for parent in parents:
+                run(["git", "cat-file", "-e", parent])
+        except Exception:
+            print(f"[{self.username}] Missing parent(s) for commit from {author}, deferring...")
+            self.pending_commits.append(payload)
+            return
 
         args = ["git", "commit-tree", tree] + sum([["-p", p] for p in parents], [])
         commit_hash = run(args, env={
@@ -145,14 +165,26 @@ class GitbasedChat:
             "GIT_AUTHOR_DATE": author_time,
             "GIT_COMMITTER_NAME": author,
             "GIT_COMMITTER_EMAIL": f"{author}@example.com",
-            "GIT_COMMITER_DATE": author_time
+            "GIT_COMMITTER_DATE": author_time
         }, input=message)
+        print(f"[{self.username}] Applied commit from {author}: {message[:40]}")
+
         run(["git", "update-ref", f"refs/heads/{author}", commit_hash])
+
+    def retry_pending_commits(self):
+        while self.running:
+            time.sleep(5)
+            for payload in self.pending_commits[:]:
+                try:
+                    for parent in payload["parents"]:
+                        run(["git", "cat-file", "-e", parent])
+                    self.receive_commit(payload)
+                    self.pending_commits.remove(payload)
+                except Exception:
+                    continue
 
     def post_message(self, msg):
         run(["git", "fetch", "--all"])
-        branch = run(["git", "symbolic-ref", "--short", "HEAD"])
-        #parents = run(["git", "rev-list", "--parents", "-n", "1", branch]).split()[1:]
         refs = run(["git", "for-each-ref", "--format=%(refname)"]).splitlines()
         parents = []
         for ref in refs:
@@ -160,7 +192,7 @@ class GitbasedChat:
                 commit = run(["git", "rev-parse", ref])
                 parents.append(commit)
 
-        empty_tree  = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
         timestamp = str(int(time.time())) + " +0000"
         args = ["git", "commit-tree", empty_tree] + sum([["-p", p] for p in parents], [])
         new_commit = run(args, input=msg, env={
@@ -170,11 +202,11 @@ class GitbasedChat:
             "GIT_AUTHOR_DATE": timestamp,
             "GIT_COMMITTER_NAME": self.username,
             "GIT_COMMITTER_EMAIL": f"{self.username}@example.com",
-            "GIT_COMMITER_DATE": timestamp
+            "GIT_COMMITTER_DATE": timestamp
         })
         run(["git", "update-ref", f"refs/heads/{self.username}", new_commit])
         print(f"Message sent: {msg}")
-    
+
     def print_frontier(self):
         frontier = self.get_frontier_local()
         print("\nMessages from other Users:")
@@ -193,6 +225,9 @@ class GitbasedChat:
         except KeyboardInterrupt:
             self.running = False
             print("\nExiting...")
+            if self.temp:
+                print("Cleaning up temporary repo...")
+                self.temp_dir.cleanup()
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -207,4 +242,3 @@ if __name__ == "__main__":
     temp = sys.argv[2] == "--temp"
     app = GitbasedChat(username, temp)
     app.run()
-
