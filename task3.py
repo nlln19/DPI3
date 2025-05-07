@@ -19,7 +19,11 @@ class GitbasedChat:
         self.lock = threading.Lock()
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except Exception:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock.bind(('', BROADCAST_PORT))
 
